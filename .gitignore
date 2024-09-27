@@ -1,0 +1,26 @@
+# Diretórios do Node.js
+node_modules
+
+# Credenciais e arquivos sensíveis
+.env
+service_account.json
+
+# Arquivos de compilação e logs
+*.log
+*.tmp
+
+# Diretórios locais
+Audios
+Imagens
+Videos
+Letras
+Trash
+Contatos
+Stickers
+Outros
+
+# Outros
+.DS_Store
+
+.wwebjs_cache
+.wwebjs_auth
