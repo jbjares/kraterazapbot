@@ -7,6 +7,7 @@ const qrcode = require('qrcode-terminal');
 const dotenv = require('dotenv');
 dotenv.config();
 
+// Diretórios locais para mídias
 const localDirectories = {
     audio: process.env.LOCAL_AUDIO_DIR,
     image: process.env.LOCAL_IMAGE_DIR,
@@ -16,6 +17,9 @@ const localDirectories = {
     stickers: process.env.LOCAL_STICKERS_DIR,
     other: process.env.LOCAL_OTHER_DIR
 };
+
+// Lista de e-mails com acesso permitido
+const emailsPermitidos = process.env.EMAILS_ACESSO_PERMITIDO ? process.env.EMAILS_ACESSO_PERMITIDO.split(',') : [];
 
 // Função para garantir que os diretórios existam
 function ensureDirectoriesExist() {
@@ -57,8 +61,8 @@ async function createDriveFolderIfNotExists(driveClient, folderName, parentId = 
     }
 }
 
-// Função para fazer upload para o Google Drive mantendo a estrutura de pastas
-async function uploadToDrive(filePath, fileName, mimeType, driveClient, folderStructure) {
+// Função para fazer upload para o Google Drive e conceder acesso apenas a e-mails específicos
+async function uploadAndRestrictFileOnGoogleDrive(filePath, fileName, mimeType, driveClient, folderStructure) {
     let parentId = 'root';
     for (const folder of folderStructure) {
         parentId = await createDriveFolderIfNotExists(driveClient, folder, parentId);
@@ -73,6 +77,7 @@ async function uploadToDrive(filePath, fileName, mimeType, driveClient, folderSt
         body: fs.createReadStream(filePath),
     };
 
+    // Faz o upload do arquivo para o Google Drive
     const response = await driveClient.files.create({
         resource: fileMetadata,
         media: media,
@@ -81,23 +86,39 @@ async function uploadToDrive(filePath, fileName, mimeType, driveClient, folderSt
 
     if (response.data.id) {
         console.log(`Arquivo ${fileName} foi enviado ao Google Drive, ID: ${response.data.id}`);
-        // Após confirmação de upload bem-sucedido, remover o arquivo local
+
+        // Conceder permissões de leitura aos e-mails listados
+        for (const email of emailsPermitidos) {
+            await driveClient.permissions.create({
+                fileId: response.data.id,
+                requestBody: {
+                    role: 'reader',
+                    type: 'user',
+                    emailAddress: email.trim(),
+                },
+            });
+            console.log(`Acesso concedido ao e-mail: ${email.trim()}`);
+        }
+
+        // Após confirmação de upload e permissão bem-sucedida, remover o arquivo local
         fs.removeSync(filePath);
         console.log(`Arquivo ${filePath} foi removido do diretório local.`);
-        return true;
+        return response.data.id;
     } else {
         console.error(`Erro ao enviar ${fileName} para o Google Drive.`);
         return false;
     }
 }
 
-// Função para converter arquivos .opus para .mp3
-async function convertOpusToMp3(sourcePath, targetPath) {
+// Função para converter arquivos .opus para .mp3 e remover o arquivo original
+async function convertAndRemoveOriginal(sourcePath, targetPath) {
     return new Promise((resolve, reject) => {
         ffmpeg(sourcePath)
             .toFormat('mp3')
             .on('end', () => {
-                console.log(`Arquivo .opus convertido para .mp3 e salvo em ${targetPath}`);
+                console.log(`Arquivo ${sourcePath} convertido para .mp3 e salvo em ${targetPath}`);
+                fs.removeSync(sourcePath);  // Remove o arquivo original após a conversão
+                console.log(`Arquivo original ${sourcePath} foi removido.`);
                 resolve();
             })
             .on('error', err => {
@@ -146,19 +167,19 @@ client.on('ready', async () => {
             if (message.hasMedia) {
                 const media = await message.downloadMedia();
                 const randomId = Math.floor(Math.random() * 1000000000);
-                let fileName, filePath, folderStructure;
+                let fileName, filePath, originalFilePath, folderStructure;
 
                 if (media.mimetype.startsWith('audio/ogg') || media.mimetype === 'audio/opus') {
                     fileName = `audio_${randomId}.mp3`;
-                    const opusFile = path.join(localDirectories.audio, `audio_${randomId}.opus`);
+                    originalFilePath = path.join(localDirectories.audio, `audio_${randomId}.opus`);
                     filePath = path.join(localDirectories.audio, fileName);
 
                     // Salvar o arquivo .opus
-                    fs.writeFileSync(opusFile, media.data, 'base64');
-                    console.log(`Áudio .opus salvo como ${opusFile}`);
+                    fs.writeFileSync(originalFilePath, media.data, 'base64');
+                    console.log(`Áudio .opus salvo como ${originalFilePath}`);
 
-                    // Converter para .mp3
-                    await convertOpusToMp3(opusFile, filePath);
+                    // Converter para .mp3 e remover o arquivo original .opus
+                    await convertAndRemoveOriginal(originalFilePath, filePath);
                     folderStructure = [process.env.ROOT_FOLDER_NAME, 'Audios'];
                 } else if (media.mimetype.startsWith('image')) {
                     if (media.mimetype === 'image/webp') {
@@ -188,15 +209,9 @@ client.on('ready', async () => {
                     fs.writeFileSync(filePath, media.data, 'base64');
                 }
 
-                // Upload para o Google Drive
+                // Upload para o Google Drive e conceder acesso restrito aos e-mails listados
                 const driveClient = await getDriveClient();
-                const uploadSuccess = await uploadToDrive(filePath, fileName, media.mimetype, driveClient, folderStructure);
-
-                if (uploadSuccess) {
-                    console.log(`Upload do arquivo ${fileName} foi bem-sucedido e o arquivo local foi removido.`);
-                } else {
-                    console.error(`Falha ao enviar o arquivo ${fileName} para o Google Drive.`);
-                }
+                await uploadAndRestrictFileOnGoogleDrive(filePath, fileName, media.mimetype, driveClient, folderStructure);
             }
         }
     });
